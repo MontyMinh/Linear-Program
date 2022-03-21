@@ -1,0 +1,129 @@
+import numpy as np
+import random
+from scipy.optimize import linprog
+import pandas as pd
+from numpy.testing import assert_almost_equal as aae
+from sympy import *
+from scipy.linalg import block_diag
+import time 
+import matplotlib.pyplot as plt
+import csv
+from scipy.optimize import curve_fit
+
+def generate_data(size):
+
+    no_I, no_J, no_K, no_P = 6, size, 1, 2 # factories, customers, ports, products
+
+    ibik = np.random.rand(no_P, no_I, no_K) # Inbound Cost
+    obij = np.random.rand(no_P, no_I, no_J) # Outbound Cost
+    vci = np.random.rand(no_P, no_I) # Variable Production Cost
+    wj = np.random.rand(no_P, no_J) # Demands vector
+    ki = np.random.rand(no_I) # Factory Capacity
+    ei = np.random.rand(no_P, no_I) # Efficiency If by-product: row same, by-factory: column same
+    ti = np.random.rand(no_P, no_I) # Time per product per factory
+
+    while np.sum(wj) >= np.sum(ki):
+        scaling = np.sum(wj) / np.sum(ki) + np.random.rand()*np.random.randint(1, 10)
+        ki *= scaling
+        
+    return no_I, no_J, no_K, ibik, obij, vci, wj, ki, ei, ti
+    
+def generate_objective_vector(no_I, no_J, no_K, no_P, ibik, obij, vci):
+  vci = np.tile(vci.reshape(no_P, no_I, 1), reps = no_J)
+  c = np.concatenate([ibik.reshape(no_P, no_I, no_K), 
+                      (obij+vci).reshape(no_P, no_I, no_J)], axis = 2).flatten()
+  return c
+      
+def generate_demand_matrix(no_I, no_J, no_K, no_P):
+    
+    sub_block = np.tile(np.hstack([np.zeros((no_J, no_K)), np.eye(no_J)]), reps = no_I)
+    
+    Wijk = block_diag(*[sub_block]*no_P)
+    
+    return Wijk
+    
+def generate_capacity_matrix(no_I, no_J, no_K, no_P, ti):
+
+    product_block_list = []
+    for p in range(no_P):
+        
+        factory_block_list = []
+        port_block = np.zeros((no_I, no_K))
+        for i in range(no_I):
+            customer_column = np.zeros((no_I, 1))
+            customer_column[i] = ti[p][i]
+            customer_block = np.repeat(customer_column, repeats = no_J, axis = 1)
+            factory_block_list.append(np.hstack([port_block, customer_block]))
+            
+        product_block_list += factory_block_list
+
+    Ki = np.concatenate(product_block_list, axis = 1)
+    
+    return Ki
+    
+def generate_supply_matrix_with_efficiency(no_I, no_J, no_K, no_P, ei):
+
+    left = np.tile(-ei.reshape(no_P*no_I, 1), reps = no_K)
+
+    right = np.ones((no_P*no_I, no_J))
+
+    Si = block_diag(*np.hstack([left, right]))
+    
+    return Si
+    
+ def prep(no_I, no_J, no_K, ibik, obij, vci, wj, ki, ei, ti):
+    
+    ### Standard form of our model
+    ## Assume non-trivial
+    Wijk = generate_demand_matrix(no_I, no_J, no_K, no_P) # Demand Constraint Matrix
+    Ki = generate_capacity_matrix(no_I, no_J, no_K, no_P, ti) # Capacity Constraint Matrix
+
+    # Sufficient Supply Matrix
+    Si = generate_supply_matrix_with_efficiency(no_I, no_J, no_K, no_P, ei)
+
+    # New cost vector
+    c = generate_objective_vector(no_I, no_J, no_K, no_P, ibik, obij, vci)
+
+    # Upper Bound
+    A_ub = np.vstack([-Wijk, Ki, Si])
+    b_ub = np.hstack([-wj.flatten(), ki.flatten(), np.zeros(no_I*no_P)])
+    
+    return c, A_ub, b_ub
+    
+    
+ def record_data(size, run_time):
+    # open the file in the write mode
+    with open('benchmark_time.csv', 'a', newline='\n') as f:
+        writer = csv.writer(f)
+        writer.writerow([size, runtime])
+        
+  def benchmarking(size, no_iter = 100):
+    
+    c, A_ub, b_ub = prep(*generate_data(size))
+    
+    assert linprog(c, A_ub = A_ub, b_ub = b_ub).status == 0, 'Program does not terminate'
+    
+    tic = time.time()
+    for _ in range(no_iter):
+        linprog(c, A_ub = A_ub, b_ub = b_ub, method = 'highs')
+    toc = time.time()
+    
+    del c, A_ub, b_ub
+    
+    run_time = (toc-tic)/no_iter
+    
+    with open('benchmark_time.csv', 'a', newline='\n') as f:
+        writer = csv.writer(f)
+        writer.writerow([size, run_time])
+    
+    return run_time
+    
+ def run_benchmarking(lb, ub, no_iter = 100):
+    
+    time_list = []
+    
+    for size in range(lb, ub):
+        print(f'Current Customer Size: {size}', end= '\r')
+        time_list.append(benchmarking(size, no_iter = no_iter))
+    
+    return time_list
